@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 
 # --- CONFIGURATION ---
@@ -28,9 +29,12 @@ def get_existing_firebase_urls():
     return set()
 
 def get_real_album_art(artist, title):
-    """Searches the iTunes API for the real official album cover art."""
+    """Searches iTunes API using the primary artist to successfully fetch cover art."""
     try:
-        query = f"{artist} {title}"
+        # Extract only the primary artist (e.g., drop 'feat. SmallX' or '& Other' for the search query)
+        primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
+        
+        query = f"{primary_artist} {title}"
         api_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
         response = requests.get(api_url)
         
@@ -38,14 +42,12 @@ def get_real_album_art(artist, title):
             data = response.json()
             results = data.get("results", [])
             if results:
-                # Get the 100x100 image and scale it up to high resolution (600x600)
                 artwork_url = results[0].get("artworkUrl100", "")
                 if artwork_url:
                     return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
     except Exception as e:
         print(f"Could not fetch real artwork: {e}")
         
-    # Fallback placeholder if song isn't found on iTunes
     return "https://picsum.photos/400/400"
 
 def add_song_to_firebase(title, artist, raw_url, artwork_url):
@@ -83,7 +85,7 @@ def sync_music():
                     print(f"⏩ Already synced: {rel_path_url}")
                     continue
                 
-                # Parse Artist and Title from filename (Format: Artist - Title.mp3)
+                # Parse Artist and Title from filename (Format: Artist feat. Secondary - Title.mp3)
                 clean_name = file.replace(".mp3", "")
                 if " - " in clean_name:
                     artist, title = clean_name.split(" - ", 1)
@@ -93,13 +95,13 @@ def sync_music():
                     
                 print(f"🎵 Found new track: {title} by {artist}")
                 
-                # Automatically fetch the real album art online
+                # Fetch artwork using the cleaned primary artist name
                 print("🖼️ Searching for real album artwork...")
                 artwork_url = get_real_album_art(artist.strip(), title.strip())
                 
                 success = add_song_to_firebase(title.strip(), artist.strip(), raw_url, artwork_url)
                 if success:
-                    print(f"✅ Successfully registered with real cover art: {rel_path_url}")
+                    print(f"✅ Successfully registered with cover art: {rel_path_url}")
                     synced_count += 1
                 else:
                     print(f"❌ Failed to register in Firebase: {rel_path_url}")
