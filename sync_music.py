@@ -1,27 +1,88 @@
 import os
-import base64
 import requests
 
-# Load secrets from GitHub environment variables
-GITHUB_TOKEN = os.getenv("GH_PAT")
-FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
-GITHUB_USERNAME = "YOUR_GITHUB_USERNAME"  # Replace with your GitHub username
+# --- CONFIGURATION ---
+GITHUB_USERNAME = "spofpof"
 GITHUB_REPO = "my-music-library"
 GITHUB_BRANCH = "main"
 
-def sync_new_tracks():
-    print("Checking for new music tracks in the cloud...")
-    
-    # Placeholder example for an automated check or processing step:
-    # If a new song is found or downloaded locally:
-    # file_name = "ElGrandeToto - NewHit.mp3"
-    # raw_mp3_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{file_name}"
-    
-    # Push metadata to Firebase REST API automatically
+GH_PAT = os.getenv("GH_PAT")
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
+
+def get_existing_firebase_urls():
+    """Fetches all existing song URLs from Firebase Firestore to avoid duplicates."""
     firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
+    try:
+        response = requests.get(firebase_url)
+        if response.status_code == 200:
+            data = response.json()
+            existing_urls = set()
+            for doc in data.get("documents", []):
+                fields = doc.get("fields", {})
+                url_field = fields.get("url", {}).get("stringValue")
+                if url_field:
+                    existing_urls.add(url_field)
+            return existing_urls
+    except Exception as e:
+        print(f"Error fetching from Firebase: {e}")
+    return set()
+
+def add_song_to_firebase(title, artist, raw_url):
+    """Pushes new song metadata to Firebase Firestore."""
+    firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
+    payload = {
+        "fields": {
+            "title": {"stringValue": title},
+            "artist": {"stringValue": artist},
+            "artwork": {"stringValue": "https://picsum.photos/400/400"}, # Default placeholder artwork
+            "url": {"stringValue": raw_url}
+        }
+    }
+    response = requests.post(firebase_url, json=payload)
+    return response.status_code == 200
+
+def sync_music():
+    print("🔍 Scanning repository workspace for MP3 files...")
     
-    # Example payload submission structure
-    print("Cloud sync check completed successfully.")
+    # Get already synced URLs from Firebase
+    existing_urls = get_existing_firebase_urls()
+    
+    synced_count = 0
+    # Walk through workspace directory to find .mp3 files
+    for root, dirs, files in os.walk("."):
+        # Skip hidden directories like .github
+        if ".github" in root:
+            continue
+            
+        for file in files:
+            if file.lower().endswith(".mp3"):
+                # Generate the permanent GitHub raw URL
+                raw_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{file}"
+                
+                # Check if already in Firebase
+                if raw_url in existing_urls:
+                    print(f"⏩ Already synced: {file}")
+                    continue
+                
+                # Parse Artist and Title from filename (Expected format: Artist - Title.mp3)
+                clean_name = file.replace(".mp3", "")
+                if " - " in clean_name:
+                    artist, title = clean_name.split(" - ", 1)
+                else:
+                    artist = "Unknown Artist"
+                    title = clean_name
+                    
+                print(f"🎵 Found new track: {title} by {artist}")
+                
+                # Add to Firebase
+                success = add_song_to_firebase(title.strip(), artist.strip(), raw_url)
+                if success:
+                    print(f"✅ Successfully registered in Firebase: {file}")
+                    synced_count += 1
+                else:
+                    print(f"❌ Failed to register in Firebase: {file}")
+                    
+    print(f"✨ Sync complete! {synced_count} new track(s) added to Firebase.")
 
 if __name__ == "__main__":
-    sync_new_tracks()
+    sync_music()
