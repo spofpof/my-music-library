@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 
 # --- CONFIGURATION ---
@@ -27,14 +28,36 @@ def get_existing_firebase_urls():
         print(f"Error fetching from Firebase: {e}")
     return set()
 
-def add_song_to_firebase(title, artist, raw_url):
-    """Pushes new song metadata to Firebase Firestore."""
+def get_real_album_art(artist, title):
+    """Searches iTunes API using the primary artist to successfully fetch cover art."""
+    try:
+        # Extract only the primary artist (e.g., drop 'feat. SmallX' or '& Other' for the search query)
+        primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
+        
+        query = f"{primary_artist} {title}"
+        api_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
+        response = requests.get(api_url)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("results", [])
+            if results:
+                artwork_url = results[0].get("artworkUrl100", "")
+                if artwork_url:
+                    return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
+    except Exception as e:
+        print(f"Could not fetch real artwork: {e}")
+        
+    return "https://picsum.photos/400/400"
+
+def add_song_to_firebase(title, artist, raw_url, artwork_url):
+    """Pushes new song metadata and real artwork to Firebase Firestore."""
     firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
     payload = {
         "fields": {
             "title": {"stringValue": title},
             "artist": {"stringValue": artist},
-            "artwork": {"stringValue": "https://picsum.photos/400/400"},
+            "artwork": {"stringValue": artwork_url},
             "url": {"stringValue": raw_url}
         }
     }
@@ -47,26 +70,22 @@ def sync_music():
     existing_urls = get_existing_firebase_urls()
     synced_count = 0
     
-    # Walk through repository folders
     for root, dirs, files in os.walk("."):
-        # Skip hidden directories like .github or .git
         if ".github" in root or ".git" in root:
             continue
             
         for file in files:
             if file.lower().endswith(".mp3"):
-                # Get the relative path (e.g., music/song.mp3) and format for URLs
                 rel_path = os.path.relpath(os.path.join(root, file), ".")
                 rel_path_url = rel_path.replace("\\", "/")
                 
-                # Generate permanent GitHub raw URL including subfolder path
                 raw_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{rel_path_url}"
                 
                 if raw_url in existing_urls:
                     print(f"⏩ Already synced: {rel_path_url}")
                     continue
                 
-                # Parse Artist and Title from filename (Format: Artist - Title.mp3)
+                # Parse Artist and Title from filename (Format: Artist feat. Secondary - Title.mp3)
                 clean_name = file.replace(".mp3", "")
                 if " - " in clean_name:
                     artist, title = clean_name.split(" - ", 1)
@@ -76,14 +95,18 @@ def sync_music():
                     
                 print(f"🎵 Found new track: {title} by {artist}")
                 
-                success = add_song_to_firebase(title.strip(), artist.strip(), raw_url)
+                # Fetch artwork using the cleaned primary artist name
+                print("🖼️ Searching for real album artwork...")
+                artwork_url = get_real_album_art(artist.strip(), title.strip())
+                
+                success = add_song_to_firebase(title.strip(), artist.strip(), raw_url, artwork_url)
                 if success:
-                    print(f"✅ Successfully registered in Firebase: {rel_path_url}")
+                    print(f"✅ Successfully registered with cover art: {rel_path_url}")
                     synced_count += 1
                 else:
                     print(f"❌ Failed to register in Firebase: {rel_path_url}")
                     
-    print(f"✨ Sync complete! {synced_count} new track(s) added to Firebase.")
+    print(f"✨ Sync complete! {synced_count} new track(s) added.")
 
 if __name__ == "__main__":
     sync_music()
