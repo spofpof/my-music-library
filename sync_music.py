@@ -34,7 +34,7 @@ def add_song_to_firebase(title, artist, raw_url):
         "fields": {
             "title": {"stringValue": title},
             "artist": {"stringValue": artist},
-            "artwork": {"stringValue": "https://picsum.photos/400/400"}, # Default placeholder artwork
+            "artwork": {"stringValue": "https://picsum.photos/400/400"},
             "url": {"stringValue": raw_url}
         }
     }
@@ -42,29 +42,31 @@ def add_song_to_firebase(title, artist, raw_url):
     return response.status_code == 200
 
 def sync_music():
-    print("🔍 Scanning repository workspace for MP3 files...")
+    print("🔍 Scanning repository for MP3 files...")
     
-    # Get already synced URLs from Firebase
     existing_urls = get_existing_firebase_urls()
-    
     synced_count = 0
-    # Walk through workspace directory to find .mp3 files
+    
+    # Walk through repository folders
     for root, dirs, files in os.walk("."):
-        # Skip hidden directories like .github
-        if ".github" in root:
+        # Skip hidden directories like .github or .git
+        if ".github" in root or ".git" in root:
             continue
             
         for file in files:
             if file.lower().endswith(".mp3"):
-                # Generate the permanent GitHub raw URL
-                raw_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{file}"
+                # Get the relative path (e.g., music/song.mp3) and format for URLs
+                rel_path = os.path.relpath(os.path.join(root, file), ".")
+                rel_path_url = rel_path.replace("\\", "/")
                 
-                # Check if already in Firebase
+                # Generate permanent GitHub raw URL including subfolder path
+                raw_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{rel_path_url}"
+                
                 if raw_url in existing_urls:
-                    print(f"⏩ Already synced: {file}")
+                    print(f"⏩ Already synced: {rel_path_url}")
                     continue
                 
-                # Parse Artist and Title from filename (Expected format: Artist - Title.mp3)
+                # Parse Artist and Title from filename (Format: Artist - Title.mp3)
                 clean_name = file.replace(".mp3", "")
                 if " - " in clean_name:
                     artist, title = clean_name.split(" - ", 1)
@@ -74,13 +76,12 @@ def sync_music():
                     
                 print(f"🎵 Found new track: {title} by {artist}")
                 
-                # Add to Firebase
                 success = add_song_to_firebase(title.strip(), artist.strip(), raw_url)
                 if success:
-                    print(f"✅ Successfully registered in Firebase: {file}")
+                    print(f"✅ Successfully registered in Firebase: {rel_path_url}")
                     synced_count += 1
                 else:
-                    print(f"❌ Failed to register in Firebase: {file}")
+                    print(f"❌ Failed to register in Firebase: {rel_path_url}")
                     
     print(f"✨ Sync complete! {synced_count} new track(s) added to Firebase.")
 
