@@ -1,6 +1,5 @@
 import os
 import re
-import base64
 import requests
 import mutagen
 
@@ -11,26 +10,6 @@ GITHUB_BRANCH = "main"
 
 GH_PAT = os.getenv("GH_PAT")
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-
-def get_spotify_token():
-    """Authenticates with Spotify API using Client Credentials flow to get an access token."""
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        return None
-    try:
-        auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
-        b64_auth = base64.b64encode(auth_str.encode()).decode()
-        headers = {"Authorization": f"Basic {b64_auth}"}
-        data = {"grant_type": "client_credentials"}
-        response = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
-        if response.status_code == 200:
-            return response.json().get("access_token")
-        else:
-            print(f"Spotify Auth Failed: Status {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"Error getting Spotify token: {e}")
-    return None
 
 def get_existing_firebase_urls():
     """Fetches all existing song URLs from Firebase Firestore to avoid duplicates."""
@@ -51,62 +30,47 @@ def get_existing_firebase_urls():
     return set()
 
 def get_real_album_art(artist, title):
-    """Searches Spotify API for track cover art with debugging output."""
-    token = get_spotify_token()
-    if not token:
-        print("⚠️ Missing or invalid Spotify API credentials, using placeholder artwork.")
-        return "https://picsum.photos/400/400"
-
-    headers = {"Authorization": f"Bearer {token}"}
+    """Searches Deezer API first (no keys needed), then falls back to iTunes API."""
     
+    # Clean up artist and title for better searching
+    primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
+    clean_title = re.sub(r'\s*[\(\[].*?(feat|ft|live|mix).*?[\)\]]', '', title, flags=re.IGNORECASE).strip()
+    if not clean_title:
+        clean_title = title
+
+    query = f"{primary_artist} {clean_title}"
+
+    # --- 1. Try Deezer API (Public, highly reliable for local/rap music) ---
     try:
-        # 1. Extract primary artist (dropping features, commas, etc.)
-        primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
-        
-        # 2. Clean track title by removing parenthetical features (e.g., "(feat. ...)")
-        clean_title = re.sub(r'\s*[\(\[].*?(feat|ft|live|mix).*?[\)\]]', '', title, flags=re.IGNORECASE).strip()
-        if not clean_title:
-            clean_title = title
-
-        # Attempt 1: Flexible free-text search (Primary Artist + Clean Title)
-        query = f"{primary_artist} {clean_title}"
-        search_url = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query)}&type=track&limit=1"
-        print(f"🔍 DEBUG: Searching Spotify -> '{query}'")
-        response = requests.get(search_url, headers=headers)
-        
-        print(f"🔍 DEBUG: Response status -> {response.status_code}")
+        deezer_url = f"https://api.deezer.com/search?q={requests.utils.quote(query)}"
+        response = requests.get(deezer_url)
         if response.status_code == 200:
-            data = response.json()
-            items = data.get("tracks", {}).get("items", [])
-            if items:
-                images = items[0].get("album", {}).get("images", [])
-                if images:
-                    print(f"✅ DEBUG: Found artwork via Attempt 1!")
-                    return images[0].get("url")
-            else:
-                print(f"🔍 DEBUG: Attempt 1 returned 0 items from Spotify.")
-
-        # Attempt 2 (Fallback): Search by clean title only
-        query_title = f"{clean_title}"
-        search_url_t = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query_title)}&type=track&limit=1"
-        print(f"🔍 DEBUG: Fallback Search Spotify -> Title only: '{query_title}'")
-        response_t = requests.get(search_url_t, headers=headers)
-        
-        if response_t.status_code == 200:
-            data_t = response_t.json()
-            items_t = data_t.get("tracks", {}).get("items", [])
-            if items_t:
-                images_t = items_t[0].get("album", {}).get("images", [])
-                if images_t:
-                    print(f"✅ DEBUG: Found artwork via Attempt 2 (Title-only fallback)!")
-                    return images_t[0].get("url")
-            else:
-                print(f"🔍 DEBUG: Attempt 2 returned 0 items from Spotify.")
-
+            data = response.json().get("data", [])
+            if data:
+                album = data[0].get("album", {})
+                # Get the highest resolution cover available
+                artwork = album.get("cover_xl") or album.get("cover_big") or album.get("cover_medium")
+                if artwork:
+                    print(f"✅ Found artwork via Deezer!")
+                    return artwork
     except Exception as e:
-        print(f"Could not fetch Spotify artwork due to exception: {e}")
-        
-    print(f"⚠️ Spotify found no match for '{artist} - {title}', using placeholder.")
+        print(f"Deezer search error: {e}")
+
+    # --- 2. Fallback: Try iTunes API ---
+    try:
+        itunes_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
+        response = requests.get(itunes_url)
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            if results:
+                artwork_url = results[0].get("artworkUrl100", "")
+                if artwork_url:
+                    print(f"✅ Found artwork via iTunes fallback!")
+                    return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
+    except Exception as e:
+        print(f"iTunes fallback error: {e}")
+
+    print(f"⚠️ Could not find artwork for '{artist} - {title}', using placeholder.")
     return "https://picsum.photos/400/400"
 
 def add_song_to_firebase(title, artist, raw_url, artwork_url):
@@ -169,13 +133,13 @@ def sync_music():
                     
                 print(f"🎵 Found track: {title} by {artist}")
                 
-                # 3. Fetch cover art from Spotify
-                print("🖼️ Fetching cover art from Spotify...")
+                # 3. Fetch cover art from Deezer/iTunes
+                print("🖼️ Fetching cover art...")
                 artwork_url = get_real_album_art(artist, title)
                 
                 success = add_song_to_firebase(title, artist, raw_url, artwork_url)
                 if success:
-                    print(f"✅ Successfully registered with Spotify cover: {rel_path_url}")
+                    print(f"✅ Successfully registered with cover art: {rel_path_url}")
                     synced_count += 1
                 else:
                     print(f"❌ Failed to register in Firebase: {rel_path_url}")
