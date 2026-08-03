@@ -26,6 +26,8 @@ def get_spotify_token():
         response = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
         if response.status_code == 200:
             return response.json().get("access_token")
+        else:
+            print(f"Spotify Auth Failed: Status {response.status_code} - {response.text}")
     except Exception as e:
         print(f"Error getting Spotify token: {e}")
     return None
@@ -49,10 +51,10 @@ def get_existing_firebase_urls():
     return set()
 
 def get_real_album_art(artist, title):
-    """Searches Spotify API for track cover art using flexible free-text queries and cleaning."""
+    """Searches Spotify API for track cover art with debugging output."""
     token = get_spotify_token()
     if not token:
-        print("⚠️ Missing Spotify API credentials, using placeholder artwork.")
+        print("⚠️ Missing or invalid Spotify API credentials, using placeholder artwork.")
         return "https://picsum.photos/400/400"
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -69,28 +71,40 @@ def get_real_album_art(artist, title):
         # Attempt 1: Flexible free-text search (Primary Artist + Clean Title)
         query = f"{primary_artist} {clean_title}"
         search_url = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query)}&type=track&limit=1"
+        print(f"🔍 DEBUG: Searching Spotify -> '{query}'")
         response = requests.get(search_url, headers=headers)
         
+        print(f"🔍 DEBUG: Response status -> {response.status_code}")
         if response.status_code == 200:
-            items = response.json().get("tracks", {}).get("items", [])
+            data = response.json()
+            items = data.get("tracks", {}).get("items", [])
             if items:
                 images = items[0].get("album", {}).get("images", [])
                 if images:
+                    print(f"✅ DEBUG: Found artwork via Attempt 1!")
                     return images[0].get("url")
+            else:
+                print(f"🔍 DEBUG: Attempt 1 returned 0 items from Spotify.")
 
         # Attempt 2 (Fallback): Search by clean title only
         query_title = f"{clean_title}"
         search_url_t = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query_title)}&type=track&limit=1"
+        print(f"🔍 DEBUG: Fallback Search Spotify -> Title only: '{query_title}'")
         response_t = requests.get(search_url_t, headers=headers)
+        
         if response_t.status_code == 200:
-            items_t = response_t.json().get("tracks", {}).get("items", [])
+            data_t = response_t.json()
+            items_t = data_t.get("tracks", {}).get("items", [])
             if items_t:
                 images_t = items_t[0].get("album", {}).get("images", [])
                 if images_t:
+                    print(f"✅ DEBUG: Found artwork via Attempt 2 (Title-only fallback)!")
                     return images_t[0].get("url")
+            else:
+                print(f"🔍 DEBUG: Attempt 2 returned 0 items from Spotify.")
 
     except Exception as e:
-        print(f"Could not fetch Spotify artwork: {e}")
+        print(f"Could not fetch Spotify artwork due to exception: {e}")
         
     print(f"⚠️ Spotify found no match for '{artist} - {title}', using placeholder.")
     return "https://picsum.photos/400/400"
