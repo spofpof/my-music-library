@@ -30,11 +30,12 @@ def get_existing_firebase_urls():
     return set()
 
 def get_real_album_art(artist, title):
-    """Searches iTunes API using the primary artist to successfully fetch cover art."""
+    """Searches iTunes API using primary artist + title, with a title-only fallback."""
     try:
         # Extract only the primary artist (e.g., drop 'feat. SmallX' or '& Other' for the search query)
         primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
         
+        # Attempt 1: Search by Primary Artist + Title
         query = f"{primary_artist} {title}"
         api_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
         response = requests.get(api_url)
@@ -46,9 +47,23 @@ def get_real_album_art(artist, title):
                 artwork_url = results[0].get("artworkUrl100", "")
                 if artwork_url:
                     return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
+
+        # Attempt 2 (Fallback): If artist+title failed, try searching by just the song Title
+        if title:
+            title_url = f"https://itunes.apple.com/search?term={requests.utils.quote(title)}&entity=song&limit=1"
+            res_title = requests.get(title_url)
+            if res_title.status_code == 200:
+                data_t = res_title.json()
+                results_t = data_t.get("results", [])
+                if results_t:
+                    artwork_url = results_t[0].get("artworkUrl100", "")
+                    if artwork_url:
+                        return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
+                        
     except Exception as e:
         print(f"Could not fetch real artwork: {e}")
         
+    print(f"⚠️ iTunes found no match for '{artist} - {title}', using placeholder.")
     return "https://picsum.photos/400/400"
 
 def add_song_to_firebase(title, artist, raw_url, artwork_url):
