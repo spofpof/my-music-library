@@ -1,7 +1,9 @@
 import os
 import re
+import base64
 import requests
 import mutagen
+import mutagen.id3
 
 # --- CONFIGURATION ---
 GITHUB_USERNAME = "spofpof"
@@ -29,10 +31,23 @@ def get_existing_firebase_urls():
         print(f"Error fetching from Firebase: {e}")
     return set()
 
-def get_real_album_art(artist, title):
-    """Searches Deezer API first (no keys needed), then falls back to iTunes API."""
-    
-    # Clean up artist and title for better searching
+def extract_embedded_artwork(file_path):
+    """Extracts embedded cover art from the MP3 file if it exists."""
+    try:
+        audio = mutagen.File(file_path)
+        if audio is not None and audio.tags is not None:
+            for tag in audio.tags.values():
+                if isinstance(tag, mutagen.id3.APIC):
+                    image_data = tag.data
+                    mime_type = tag.mime or "image/jpeg"
+                    b64_encoded = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:{mime_type};base64,{b64_encoded}"
+    except Exception as e:
+        print(f"Error extracting embedded artwork: {e}")
+    return None
+
+def get_fallback_artwork(artist, title):
+    """Fallback to Deezer or iTunes if no embedded artwork is found."""
     primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
     clean_title = re.sub(r'\s*[\(\[].*?(feat|ft|live|mix).*?[\)\]]', '', title, flags=re.IGNORECASE).strip()
     if not clean_title:
@@ -40,7 +55,7 @@ def get_real_album_art(artist, title):
 
     query = f"{primary_artist} {clean_title}"
 
-    # --- 1. Try Deezer API (Public, highly reliable for local/rap music) ---
+    # Try Deezer API
     try:
         deezer_url = f"https://api.deezer.com/search?q={requests.utils.quote(query)}"
         response = requests.get(deezer_url)
@@ -48,15 +63,13 @@ def get_real_album_art(artist, title):
             data = response.json().get("data", [])
             if data:
                 album = data[0].get("album", {})
-                # Get the highest resolution cover available
                 artwork = album.get("cover_xl") or album.get("cover_big") or album.get("cover_medium")
                 if artwork:
-                    print(f"✅ Found artwork via Deezer!")
                     return artwork
-    except Exception as e:
-        print(f"Deezer search error: {e}")
+    except Exception:
+        pass
 
-    # --- 2. Fallback: Try iTunes API ---
+    # Try iTunes API Fallback
     try:
         itunes_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
         response = requests.get(itunes_url)
@@ -65,12 +78,10 @@ def get_real_album_art(artist, title):
             if results:
                 artwork_url = results[0].get("artworkUrl100", "")
                 if artwork_url:
-                    print(f"✅ Found artwork via iTunes fallback!")
                     return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
-    except Exception as e:
-        print(f"iTunes fallback error: {e}")
+    except Exception:
+        pass
 
-    print(f"⚠️ Could not find artwork for '{artist} - {title}', using placeholder.")
     return "https://picsum.photos/400/400"
 
 def add_song_to_firebase(title, artist, raw_url, artwork_url):
@@ -120,7 +131,7 @@ def sync_music():
                 title = fallback_title.strip()
                 artist = fallback_artist.strip()
 
-                # 2. Extract true embedded ID3 tags using Mutagen (with fallback to filename)
+                # 2. Extract true embedded ID3 tags using Mutagen
                 try:
                     audio = mutagen.File(file_path, easy=True)
                     if audio is not None:
@@ -129,17 +140,23 @@ def sync_music():
                         if 'artist' in audio and audio['artist']:
                             artist = audio['artist'][0].strip()
                 except Exception as e:
-                    print(f"⚠️ Could not read ID3 tags for {file}, using filename fallback: {e}")
+                    print(f"⚠️ Could not read ID3 tags for {file}: {e}")
                     
                 print(f"🎵 Found track: {title} by {artist}")
                 
-                # 3. Fetch cover art from Deezer/iTunes
-                print("🖼️ Fetching cover art...")
-                artwork_url = get_real_album_art(artist, title)
+                # 3. Get artwork (Embedded first, then API fallback)
+                print("🖼️ Checking for embedded cover art...")
+                artwork_url = extract_embedded_artwork(file_path)
+                
+                if artwork_url:
+                    print("✅ Found embedded cover art in MP3 file!")
+                else:
+                    print("🌐 No embedded cover found, searching online APIs...")
+                    artwork_url = get_fallback_artwork(artist, title)
                 
                 success = add_song_to_firebase(title, artist, raw_url, artwork_url)
                 if success:
-                    print(f"✅ Successfully registered with cover art: {rel_path_url}")
+                    print(f"✅ Successfully registered track: {rel_path_url}")
                     synced_count += 1
                 else:
                     print(f"❌ Failed to register in Firebase: {rel_path_url}")
