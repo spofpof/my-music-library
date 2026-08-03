@@ -49,7 +49,7 @@ def get_existing_firebase_urls():
     return set()
 
 def get_real_album_art(artist, title):
-    """Searches Spotify API for track cover art, with primary artist + title and title-only fallbacks."""
+    """Searches Spotify API for track cover art using flexible free-text queries and cleaning."""
     token = get_spotify_token()
     if not token:
         print("⚠️ Missing Spotify API credentials, using placeholder artwork.")
@@ -58,11 +58,16 @@ def get_real_album_art(artist, title):
     headers = {"Authorization": f"Bearer {token}"}
     
     try:
-        # Extract primary artist (dropping features/collaborators)
+        # 1. Extract primary artist (dropping features, commas, etc.)
         primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
         
-        # Attempt 1: Search by track and primary artist
-        query = f"track:{title} artist:{primary_artist}"
+        # 2. Clean track title by removing parenthetical features (e.g., "(feat. ...)")
+        clean_title = re.sub(r'\s*[\(\[].*?(feat|ft|live|mix).*?[\)\]]', '', title, flags=re.IGNORECASE).strip()
+        if not clean_title:
+            clean_title = title
+
+        # Attempt 1: Flexible free-text search (Primary Artist + Clean Title)
+        query = f"{primary_artist} {clean_title}"
         search_url = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query)}&type=track&limit=1"
         response = requests.get(search_url, headers=headers)
         
@@ -71,19 +76,18 @@ def get_real_album_art(artist, title):
             if items:
                 images = items[0].get("album", {}).get("images", [])
                 if images:
-                    return images[0].get("url") # Usually the highest resolution image (e.g. 640x640)
+                    return images[0].get("url")
 
-        # Attempt 2 (Fallback): Search by track title only
-        if title:
-            query_title = f"track:{title}"
-            search_url_t = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query_title)}&type=track&limit=1"
-            response_t = requests.get(search_url_t, headers=headers)
-            if response_t.status_code == 200:
-                items_t = response_t.json().get("tracks", {}).get("items", [])
-                if items_t:
-                    images_t = items_t[0].get("album", {}).get("images", [])
-                    if images_t:
-                        return images_t[0].get("url")
+        # Attempt 2 (Fallback): Search by clean title only
+        query_title = f"{clean_title}"
+        search_url_t = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query_title)}&type=track&limit=1"
+        response_t = requests.get(search_url_t, headers=headers)
+        if response_t.status_code == 200:
+            items_t = response_t.json().get("tracks", {}).get("items", [])
+            if items_t:
+                images_t = items_t[0].get("album", {}).get("images", [])
+                if images_t:
+                    return images_t[0].get("url")
 
     except Exception as e:
         print(f"Could not fetch Spotify artwork: {e}")
