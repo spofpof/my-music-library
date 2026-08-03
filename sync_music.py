@@ -1,5 +1,6 @@
 import os
 import re
+import base64
 import requests
 import mutagen
 
@@ -10,6 +11,24 @@ GITHUB_BRANCH = "main"
 
 GH_PAT = os.getenv("GH_PAT")
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+def get_spotify_token():
+    """Authenticates with Spotify API using Client Credentials flow to get an access token."""
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        return None
+    try:
+        auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
+        b64_auth = base64.b64encode(auth_str.encode()).decode()
+        headers = {"Authorization": f"Basic {b64_auth}"}
+        data = {"grant_type": "client_credentials"}
+        response = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+        if response.status_code == 200:
+            return response.json().get("access_token")
+    except Exception as e:
+        print(f"Error getting Spotify token: {e}")
+    return None
 
 def get_existing_firebase_urls():
     """Fetches all existing song URLs from Firebase Firestore to avoid duplicates."""
@@ -30,44 +49,50 @@ def get_existing_firebase_urls():
     return set()
 
 def get_real_album_art(artist, title):
-    """Searches iTunes API using primary artist + title, with a title-only fallback."""
+    """Searches Spotify API for track cover art, with primary artist + title and title-only fallbacks."""
+    token = get_spotify_token()
+    if not token:
+        print("⚠️ Missing Spotify API credentials, using placeholder artwork.")
+        return "https://picsum.photos/400/400"
+
+    headers = {"Authorization": f"Bearer {token}"}
+    
     try:
-        # Extract only the primary artist (e.g., drop 'feat. SmallX' or '& Other' for the search query)
+        # Extract primary artist (dropping features/collaborators)
         primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
         
-        # Attempt 1: Search by Primary Artist + Title
-        query = f"{primary_artist} {title}"
-        api_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
-        response = requests.get(api_url)
+        # Attempt 1: Search by track and primary artist
+        query = f"track:{title} artist:{primary_artist}"
+        search_url = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query)}&type=track&limit=1"
+        response = requests.get(search_url, headers=headers)
         
         if response.status_code == 200:
-            data = response.json()
-            results = data.get("results", [])
-            if results:
-                artwork_url = results[0].get("artworkUrl100", "")
-                if artwork_url:
-                    return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
+            items = response.json().get("tracks", {}).get("items", [])
+            if items:
+                images = items[0].get("album", {}).get("images", [])
+                if images:
+                    return images[0].get("url") # Usually the highest resolution image (e.g. 640x640)
 
-        # Attempt 2 (Fallback): If artist+title failed, try searching by just the song Title
+        # Attempt 2 (Fallback): Search by track title only
         if title:
-            title_url = f"https://itunes.apple.com/search?term={requests.utils.quote(title)}&entity=song&limit=1"
-            res_title = requests.get(title_url)
-            if res_title.status_code == 200:
-                data_t = res_title.json()
-                results_t = data_t.get("results", [])
-                if results_t:
-                    artwork_url = results_t[0].get("artworkUrl100", "")
-                    if artwork_url:
-                        return artwork_url.replace("100x100bb.jpg", "600x600bb.jpg")
-                        
+            query_title = f"track:{title}"
+            search_url_t = f"https://api.spotify.com/v1/search?q={requests.utils.quote(query_title)}&type=track&limit=1"
+            response_t = requests.get(search_url_t, headers=headers)
+            if response_t.status_code == 200:
+                items_t = response_t.json().get("tracks", {}).get("items", [])
+                if items_t:
+                    images_t = items_t[0].get("album", {}).get("images", [])
+                    if images_t:
+                        return images_t[0].get("url")
+
     except Exception as e:
-        print(f"Could not fetch real artwork: {e}")
+        print(f"Could not fetch Spotify artwork: {e}")
         
-    print(f"⚠️ iTunes found no match for '{artist} - {title}', using placeholder.")
+    print(f"⚠️ Spotify found no match for '{artist} - {title}', using placeholder.")
     return "https://picsum.photos/400/400"
 
 def add_song_to_firebase(title, artist, raw_url, artwork_url):
-    """Pushes new song metadata and real artwork to Firebase Firestore."""
+    """Pushes new song metadata and cover art to Firebase Firestore."""
     firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
     payload = {
         "fields": {
@@ -126,13 +151,13 @@ def sync_music():
                     
                 print(f"🎵 Found track: {title} by {artist}")
                 
-                # 3. Fetch artwork using the cleaned primary artist name and exact tags/filename data
-                print("🖼️ Searching for real album artwork...")
+                # 3. Fetch cover art from Spotify
+                print("🖼️ Fetching cover art from Spotify...")
                 artwork_url = get_real_album_art(artist, title)
                 
                 success = add_song_to_firebase(title, artist, raw_url, artwork_url)
                 if success:
-                    print(f"✅ Successfully registered with cover art: {rel_path_url}")
+                    print(f"✅ Successfully registered with Spotify cover: {rel_path_url}")
                     synced_count += 1
                 else:
                     print(f"❌ Failed to register in Firebase: {rel_path_url}")
