@@ -1,6 +1,7 @@
 import os
 import re
 import requests
+import mutagen
 
 # --- CONFIGURATION ---
 GITHUB_USERNAME = "spofpof"
@@ -76,7 +77,8 @@ def sync_music():
             
         for file in files:
             if file.lower().endswith(".mp3"):
-                rel_path = os.path.relpath(os.path.join(root, file), ".")
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, ".")
                 rel_path_url = rel_path.replace("\\", "/")
                 
                 raw_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{rel_path_url}"
@@ -85,21 +87,35 @@ def sync_music():
                     print(f"⏩ Already synced: {rel_path_url}")
                     continue
                 
-                # Parse Artist and Title from filename (Format: Artist feat. Secondary - Title.mp3)
+                # 1. Parse fallback artist and title from filename
                 clean_name = file.replace(".mp3", "")
                 if " - " in clean_name:
-                    artist, title = clean_name.split(" - ", 1)
+                    fallback_artist, fallback_title = clean_name.split(" - ", 1)
                 else:
-                    artist = "Unknown Artist"
-                    title = clean_name
+                    fallback_artist = "Unknown Artist"
+                    fallback_title = clean_name
                     
-                print(f"🎵 Found new track: {title} by {artist}")
+                title = fallback_title.strip()
+                artist = fallback_artist.strip()
+
+                # 2. Extract true embedded ID3 tags using Mutagen (with fallback to filename)
+                try:
+                    audio = mutagen.File(file_path, easy=True)
+                    if audio is not None:
+                        if 'title' in audio and audio['title']:
+                            title = audio['title'][0].strip()
+                        if 'artist' in audio and audio['artist']:
+                            artist = audio['artist'][0].strip()
+                except Exception as e:
+                    print(f"⚠️ Could not read ID3 tags for {file}, using filename fallback: {e}")
+                    
+                print(f"🎵 Found track: {title} by {artist}")
                 
-                # Fetch artwork using the cleaned primary artist name
+                # 3. Fetch artwork using the cleaned primary artist name and exact tags/filename data
                 print("🖼️ Searching for real album artwork...")
-                artwork_url = get_real_album_art(artist.strip(), title.strip())
+                artwork_url = get_real_album_art(artist, title)
                 
-                success = add_song_to_firebase(title.strip(), artist.strip(), raw_url, artwork_url)
+                success = add_song_to_firebase(title, artist, raw_url, artwork_url)
                 if success:
                     print(f"✅ Successfully registered with cover art: {rel_path_url}")
                     synced_count += 1
