@@ -9,6 +9,8 @@ on:
 jobs:
   run-sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to allow GitHub Actions to commit and push files back to the repo
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,5 +29,12 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: python sync_music.py
+
+      - name: Commit and push updated songs.json
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add songs.json
+          git diff --staged --quiet || git commit -m "Auto-update songs.json [skip ci]"
+          git push
