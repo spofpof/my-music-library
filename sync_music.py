@@ -1,6 +1,9 @@
 import os
 import re
+import base64
 import requests
+import mutagen
+import mutagen.id3
 
 # --- CONFIGURATION (Loaded securely from Environment Variables / GitHub Secrets) ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -24,6 +27,21 @@ def get_existing_firebase_urls():
     except Exception as e:
         print(f"Error fetching from Firebase: {e}")
     return set()
+
+def extract_embedded_artwork(file_path):
+    """Extracts embedded cover art from the MP3 file if it exists."""
+    try:
+        audio = mutagen.File(file_path)
+        if audio is not None and audio.tags is not None:
+            for tag in audio.tags.values():
+                if isinstance(tag, mutagen.id3.APIC):
+                    image_data = tag.data
+                    mime_type = tag.mime or "image/jpeg"
+                    b64_encoded = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:{mime_type};base64,{b64_encoded}"
+    except Exception:
+        pass
+    return None
 
 def get_fallback_artwork(artist, title):
     """Fallback to Deezer or iTunes if no embedded artwork is found."""
@@ -63,13 +81,47 @@ def get_fallback_artwork(artist, title):
 
     return "https://picsum.photos/400/400"
 
-def add_song_to_firebase(title, artist, audio_url, artwork_url):
-    """Pushes new song metadata and cover art to Firebase Firestore."""
+def get_fallback_album(artist, title):
+    """Fallback to Deezer or iTunes to find the album name if missing from ID3 tags."""
+    primary_artist = re.split(r'\b(feat\.?|ft\.?|featuring|&|,)\b', artist, flags=re.IGNORECASE)[0].strip()
+    clean_title = re.sub(r'\s*[\(\[].*?(feat|ft|live|mix).*?[\)\]]', '', title, flags=re.IGNORECASE).strip()
+    if not clean_title:
+        clean_title = title
+
+    query = f"{primary_artist} {clean_title}"
+
+    try:
+        deezer_url = f"https://api.deezer.com/search?q={requests.utils.quote(query)}"
+        response = requests.get(deezer_url)
+        if response.status_code == 200:
+            data = response.json().get("data", [])
+            if data:
+                album_obj = data[0].get("album", {})
+                if album_obj.get("title"):
+                    return album_obj.get("title")
+    except Exception:
+        pass
+
+    try:
+        itunes_url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&entity=song&limit=1"
+        response = requests.get(itunes_url)
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            if results and results[0].get("collectionName"):
+                return results[0].get("collectionName")
+    except Exception:
+        pass
+
+    return "Unknown Album"
+
+def add_song_to_firebase(title, artist, album, audio_url, artwork_url):
+    """Pushes song metadata, album name, and cover art to Firebase Firestore."""
     firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
     payload = {
         "fields": {
             "title": {"stringValue": title},
             "artist": {"stringValue": artist},
+            "album": {"stringValue": album},
             "artwork": {"stringValue": artwork_url},
             "url": {"stringValue": audio_url}
         }
@@ -114,7 +166,22 @@ def sync_music():
                 print(f"⏩ Already synced: {file_name}")
                 continue
                 
-            # Parse artist and title from filename (Format: "Artist - Title.mp3")
+            # Temporarily download file to read ID3 tags, then remove it immediately
+            temp_filename = "temp_song.mp3"
+            try:
+                file_resp = requests.get(audio_url, stream=True)
+                if file_resp.status_code == 200:
+                    with open(temp_filename, "wb") as f:
+                        for chunk in file_resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                else:
+                    print(f"❌ Failed to download {file_name} from Drive")
+                    continue
+            except Exception as e:
+                print(f"❌ Error downloading {file_name}: {e}")
+                continue
+
+            # 1. Parse filename defaults
             clean_name = file_name.replace(".mp3", "")
             if " - " in clean_name:
                 fallback_artist, fallback_title = clean_name.split(" - ", 1)
@@ -124,14 +191,39 @@ def sync_music():
                 
             title = fallback_title.strip()
             artist = fallback_artist.strip()
+            album = "Unknown Album"
+            artwork_url = None
+
+            # 2. Extract directly from MP3 ID3 tags first
+            try:
+                audio = mutagen.File(temp_filename, easy=True)
+                if audio is not None:
+                    if 'title' in audio and audio['title']:
+                        title = audio['title'][0].strip()
+                    if 'artist' in audio and audio['artist']:
+                        artist = audio['artist'][0].strip()
+                    if 'album' in audio and audio['album']:
+                        album = audio['album'][0].strip()
+            except Exception:
+                pass
+
+            # 3. Extract embedded artwork from MP3
+            artwork_url = extract_embedded_artwork(temp_filename)
+
+            # Clean up temp file
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+
+            # 4. Fallback to APIs if metadata is missing
+            if album == "Unknown Album" or not album:
+                album = get_fallback_album(artist, title)
+
+            if not artwork_url:
+                artwork_url = get_fallback_artwork(artist, title)
+
+            print(f"🎵 Track: {title} | Artist: {artist} | Album: {album}")
             
-            print(f"🎵 Found track: {title} by {artist}")
-            
-            # Get artwork via online APIs
-            print("🖼️ Searching online for cover art...")
-            artwork_url = get_fallback_artwork(artist, title)
-            
-            success = add_song_to_firebase(title, artist, audio_url, artwork_url)
+            success = add_song_to_firebase(title, artist, album, audio_url, artwork_url)
             if success:
                 print(f"✅ Successfully registered track: {file_name}")
                 synced_count += 1
