@@ -114,16 +114,21 @@ def get_fallback_album(artist, title):
 
     return "Unknown Album"
 
-def add_song_to_firebase(title, artist, album, audio_url, artwork_url):
-    """Pushes song metadata, album name, and cover art to Firebase Firestore."""
+def add_song_to_firebase(metadata):
+    """Pushes complete song metadata to Firebase Firestore."""
     firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
     payload = {
         "fields": {
-            "title": {"stringValue": title},
-            "artist": {"stringValue": artist},
-            "album": {"stringValue": album},
-            "artwork": {"stringValue": artwork_url},
-            "url": {"stringValue": audio_url}
+            "title": {"stringValue": metadata["title"]},
+            "artist": {"stringValue": metadata["artist"]},
+            "album": {"stringValue": metadata["album"]},
+            "genre": {"stringValue": metadata["genre"]},
+            "year": {"stringValue": metadata["year"]},
+            "trackNumber": {"stringValue": metadata["track_number"]},
+            "duration": {"stringValue": str(metadata["duration"])},
+            "bitrate": {"stringValue": str(metadata["bitrate"])},
+            "artwork": {"stringValue": metadata["artwork_url"]},
+            "url": {"stringValue": metadata["audio_url"]}
         }
     }
     response = requests.post(firebase_url, json=payload)
@@ -166,7 +171,7 @@ def sync_music():
                 print(f"⏩ Already synced: {file_name}")
                 continue
                 
-            # Temporarily download file to read ID3 tags, then remove it immediately
+            # Temporarily download file to read deep ID3 metadata & properties
             temp_filename = "temp_song.mp3"
             try:
                 file_resp = requests.get(audio_url, stream=True)
@@ -192,9 +197,14 @@ def sync_music():
             title = fallback_title.strip()
             artist = fallback_artist.strip()
             album = "Unknown Album"
+            genre = "Unknown Genre"
+            year = "Unknown Year"
+            track_number = "0"
+            duration = 0
+            bitrate = 0
             artwork_url = None
 
-            # 2. Extract directly from MP3 ID3 tags first
+            # 2. Extract deep ID3 tags and technical properties using Mutagen
             try:
                 audio = mutagen.File(temp_filename, easy=True)
                 if audio is not None:
@@ -204,13 +214,29 @@ def sync_music():
                         artist = audio['artist'][0].strip()
                     if 'album' in audio and audio['album']:
                         album = audio['album'][0].strip()
-            except Exception:
-                pass
+                    if 'genre' in audio and audio['genre']:
+                        genre = audio['genre'][0].strip()
+                    if 'date' in audio and audio['date']:
+                        year = str(audio['date'][0]).strip()
+                    elif 'year' in audio and audio['year']:
+                        year = str(audio['year'][0]).strip()
+                    if 'tracknumber' in audio and audio['tracknumber']:
+                        track_number = str(audio['tracknumber'][0]).strip()
+                
+                # Extract technical audio properties (duration, bitrate)
+                audio_full = mutagen.File(temp_filename)
+                if audio_full is not None and hasattr(audio_full, 'info'):
+                    if hasattr(audio_full.info, 'length'):
+                        duration = round(audio_full.info.length, 2)
+                    if hasattr(audio_full.info, 'bitrate'):
+                        bitrate = audio_full.info.bitrate
+            except Exception as e:
+                print(f"⚠️ Could not read full ID3 tags for {file_name}: {e}")
 
             # 3. Extract embedded artwork from MP3
             artwork_url = extract_embedded_artwork(temp_filename)
 
-            # Clean up temp file
+            # Clean up temp file immediately
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
@@ -221,9 +247,22 @@ def sync_music():
             if not artwork_url:
                 artwork_url = get_fallback_artwork(artist, title)
 
-            print(f"🎵 Track: {title} | Artist: {artist} | Album: {album}")
+            print(f"🎵 Track: {title} | Artist: {artist} | Album: {album} | Genre: {genre} | Year: {year}")
             
-            success = add_song_to_firebase(title, artist, album, audio_url, artwork_url)
+            metadata = {
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "genre": genre,
+                "year": year,
+                "track_number": track_number,
+                "duration": duration,
+                "bitrate": bitrate,
+                "artwork_url": artwork_url,
+                "audio_url": audio_url
+            }
+
+            success = add_song_to_firebase(metadata)
             if success:
                 print(f"✅ Successfully registered track: {file_name}")
                 synced_count += 1
