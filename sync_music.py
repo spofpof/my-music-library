@@ -1,16 +1,10 @@
 import os
 import re
-import base64
 import requests
-import mutagen
-import mutagen.id3
 
-# --- CONFIGURATION ---
-GITHUB_USERNAME = "spofpof"
-GITHUB_REPO = "my-music-library"
-GITHUB_BRANCH = "main"
-
-GH_PAT = os.getenv("GH_PAT")
+# --- CONFIGURATION (Loaded securely from Environment Variables / GitHub Secrets) ---
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
 
 def get_existing_firebase_urls():
@@ -30,21 +24,6 @@ def get_existing_firebase_urls():
     except Exception as e:
         print(f"Error fetching from Firebase: {e}")
     return set()
-
-def extract_embedded_artwork(file_path):
-    """Extracts embedded cover art from the MP3 file if it exists."""
-    try:
-        audio = mutagen.File(file_path)
-        if audio is not None and audio.tags is not None:
-            for tag in audio.tags.values():
-                if isinstance(tag, mutagen.id3.APIC):
-                    image_data = tag.data
-                    mime_type = tag.mime or "image/jpeg"
-                    b64_encoded = base64.b64encode(image_data).decode('utf-8')
-                    return f"data:{mime_type};base64,{b64_encoded}"
-    except Exception as e:
-        print(f"Error extracting embedded artwork: {e}")
-    return None
 
 def get_fallback_artwork(artist, title):
     """Fallback to Deezer or iTunes if no embedded artwork is found."""
@@ -84,7 +63,7 @@ def get_fallback_artwork(artist, title):
 
     return "https://picsum.photos/400/400"
 
-def add_song_to_firebase(title, artist, raw_url, artwork_url):
+def add_song_to_firebase(title, artist, audio_url, artwork_url):
     """Pushes new song metadata and cover art to Firebase Firestore."""
     firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
     payload = {
@@ -92,75 +71,77 @@ def add_song_to_firebase(title, artist, raw_url, artwork_url):
             "title": {"stringValue": title},
             "artist": {"stringValue": artist},
             "artwork": {"stringValue": artwork_url},
-            "url": {"stringValue": raw_url}
+            "url": {"stringValue": audio_url}
         }
     }
     response = requests.post(firebase_url, json=payload)
     return response.status_code == 200
 
 def sync_music():
-    print("🔍 Scanning repository for MP3 files...")
+    if not GOOGLE_API_KEY or not GDRIVE_FOLDER_ID or not FIREBASE_PROJECT_ID:
+        print("❌ Error: Missing configuration environment variables (GOOGLE_API_KEY, GDRIVE_FOLDER_ID, or FIREBASE_PROJECT_ID).")
+        return
+
+    print("🔍 Fetching song list directly from Google Drive folder...")
     
     existing_urls = get_existing_firebase_urls()
     synced_count = 0
+    page_token = None
     
-    for root, dirs, files in os.walk("."):
-        if ".github" in root or ".git" in root:
-            continue
+    while True:
+        url = f"https://www.googleapis.com/drive/v3/files?q='{GDRIVE_FOLDER_ID}'%20in%20parents%20and%20trashed=false&key={GOOGLE_API_KEY}&pageSize=1000"
+        if page_token:
+            url += f"&pageToken={page_token}"
             
-        for file in files:
-            if file.lower().endswith(".mp3"):
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, ".")
-                rel_path_url = rel_path.replace("\\", "/")
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"❌ Error communicating with Google Drive API: {response.text}")
+            break
+            
+        data = response.json()
+        files = data.get("files", [])
+        
+        for item in files:
+            file_name = item.get("name")
+            file_id = item.get("id")
+            
+            if not file_name or not file_name.lower().endswith(".mp3"):
+                continue
                 
-                raw_url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/{GITHUB_BRANCH}/{rel_path_url}"
+            audio_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            
+            if audio_url in existing_urls:
+                print(f"⏩ Already synced: {file_name}")
+                continue
                 
-                if raw_url in existing_urls:
-                    print(f"⏩ Already synced: {rel_path_url}")
-                    continue
+            # Parse artist and title from filename (Format: "Artist - Title.mp3")
+            clean_name = file_name.replace(".mp3", "")
+            if " - " in clean_name:
+                fallback_artist, fallback_title = clean_name.split(" - ", 1)
+            else:
+                fallback_artist = "Unknown Artist"
+                fallback_title = clean_name
                 
-                # 1. Parse fallback artist and title from filename
-                clean_name = file.replace(".mp3", "")
-                if " - " in clean_name:
-                    fallback_artist, fallback_title = clean_name.split(" - ", 1)
-                else:
-                    fallback_artist = "Unknown Artist"
-                    fallback_title = clean_name
-                    
-                title = fallback_title.strip()
-                artist = fallback_artist.strip()
-
-                # 2. Extract true embedded ID3 tags using Mutagen
-                try:
-                    audio = mutagen.File(file_path, easy=True)
-                    if audio is not None:
-                        if 'title' in audio and audio['title']:
-                            title = audio['title'][0].strip()
-                        if 'artist' in audio and audio['artist']:
-                            artist = audio['artist'][0].strip()
-                except Exception as e:
-                    print(f"⚠️ Could not read ID3 tags for {file}: {e}")
-                    
-                print(f"🎵 Found track: {title} by {artist}")
+            title = fallback_title.strip()
+            artist = fallback_artist.strip()
+            
+            print(f"🎵 Found track: {title} by {artist}")
+            
+            # Get artwork via online APIs
+            print("🖼️ Searching online for cover art...")
+            artwork_url = get_fallback_artwork(artist, title)
+            
+            success = add_song_to_firebase(title, artist, audio_url, artwork_url)
+            if success:
+                print(f"✅ Successfully registered track: {file_name}")
+                synced_count += 1
+            else:
+                print(f"❌ Failed to register in Firebase: {file_name}")
                 
-                # 3. Get artwork (Embedded first, then API fallback)
-                print("🖼️ Checking for embedded cover art...")
-                artwork_url = extract_embedded_artwork(file_path)
-                
-                if artwork_url:
-                    print("✅ Found embedded cover art in MP3 file!")
-                else:
-                    print("🌐 No embedded cover found, searching online APIs...")
-                    artwork_url = get_fallback_artwork(artist, title)
-                
-                success = add_song_to_firebase(title, artist, raw_url, artwork_url)
-                if success:
-                    print(f"✅ Successfully registered track: {rel_path_url}")
-                    synced_count += 1
-                else:
-                    print(f"❌ Failed to register in Firebase: {rel_path_url}")
-                    
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+            
     print(f"✨ Sync complete! {synced_count} new track(s) added.")
 
 if __name__ == "__main__":
