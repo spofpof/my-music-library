@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import base64
 import requests
 import mutagen
@@ -8,25 +9,18 @@ import mutagen.id3
 # --- CONFIGURATION (Loaded securely from Environment Variables / GitHub Secrets) ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
-FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
 
-def get_existing_firebase_urls():
-    """Fetches all existing song URLs from Firebase Firestore to avoid duplicates."""
-    firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
-    try:
-        response = requests.get(firebase_url)
-        if response.status_code == 200:
-            data = response.json()
-            existing_urls = set()
-            for doc in data.get("documents", []):
-                fields = doc.get("fields", {})
-                url_field = fields.get("url", {}).get("stringValue")
-                if url_field:
-                    existing_urls.add(url_field)
-            return existing_urls
-    except Exception as e:
-        print(f"Error fetching from Firebase: {e}")
-    return set()
+def load_existing_songs():
+    """Loads existing songs from local songs.json file to avoid duplicates."""
+    if os.path.exists("songs.json"):
+        try:
+            with open("songs.json", "r", encoding="utf-8") as f:
+                songs = json.load(f)
+                urls = {song.get("url") for song in songs if "url" in song}
+                return songs, urls
+        except Exception as e:
+            print(f"⚠️ Error reading existing songs.json: {e}")
+    return [], set()
 
 def extract_embedded_artwork(file_path):
     """Extracts embedded cover art from the MP3 file if it exists."""
@@ -114,34 +108,14 @@ def get_fallback_album(artist, title):
 
     return "Unknown Album"
 
-def add_song_to_firebase(metadata):
-    """Pushes complete song metadata to Firebase Firestore."""
-    firebase_url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/songs"
-    payload = {
-        "fields": {
-            "title": {"stringValue": metadata["title"]},
-            "artist": {"stringValue": metadata["artist"]},
-            "album": {"stringValue": metadata["album"]},
-            "genre": {"stringValue": metadata["genre"]},
-            "year": {"stringValue": metadata["year"]},
-            "trackNumber": {"stringValue": metadata["track_number"]},
-            "duration": {"stringValue": str(metadata["duration"])},
-            "bitrate": {"stringValue": str(metadata["bitrate"])},
-            "artwork": {"stringValue": metadata["artwork_url"]},
-            "url": {"stringValue": metadata["audio_url"]}
-        }
-    }
-    response = requests.post(firebase_url, json=payload)
-    return response.status_code == 200
-
 def sync_music():
-    if not GOOGLE_API_KEY or not GDRIVE_FOLDER_ID or not FIREBASE_PROJECT_ID:
-        print("❌ Error: Missing configuration environment variables (GOOGLE_API_KEY, GDRIVE_FOLDER_ID, or FIREBASE_PROJECT_ID).")
+    if not GOOGLE_API_KEY or not GDRIVE_FOLDER_ID:
+        print("❌ Error: Missing configuration environment variables (GOOGLE_API_KEY or GDRIVE_FOLDER_ID).")
         return
 
     print("🔍 Fetching song list directly from Google Drive folder...")
     
-    existing_urls = get_existing_firebase_urls()
+    songs_list, existing_urls = load_existing_songs()
     synced_count = 0
     page_token = None
     
@@ -168,7 +142,7 @@ def sync_music():
             audio_url = f"https://drive.google.com/uc?export=download&id={file_id}"
             
             if audio_url in existing_urls:
-                print(f"⏩ Already synced: {file_name}")
+                print(f"⏩ Already in songs.json: {file_name}")
                 continue
                 
             # Temporarily download file to read deep ID3 metadata & properties
@@ -222,7 +196,7 @@ def sync_music():
                         year = str(audio['year'][0]).strip()
                     if 'tracknumber' in audio and audio['tracknumber']:
                         track_number = str(audio['tracknumber'][0]).strip()
-                
+            
                 # Extract technical audio properties (duration, bitrate)
                 audio_full = mutagen.File(temp_filename)
                 if audio_full is not None and hasattr(audio_full, 'info'):
@@ -255,24 +229,30 @@ def sync_music():
                 "album": album,
                 "genre": genre,
                 "year": year,
-                "track_number": track_number,
+                "trackNumber": track_number,
                 "duration": duration,
                 "bitrate": bitrate,
-                "artwork_url": artwork_url,
-                "audio_url": audio_url
+                "artwork": artwork_url,
+                "url": audio_url
             }
 
-            success = add_song_to_firebase(metadata)
-            if success:
-                print(f"✅ Successfully registered track: {file_name}")
-                synced_count += 1
-            else:
-                print(f"❌ Failed to register in Firebase: {file_name}")
-                
+            songs_list.append(metadata)
+            existing_urls.add(audio_url)
+            synced_count += 1
+            print(f"✅ Added track to local queue: {file_name}")
+            
         page_token = data.get("nextPageToken")
         if not page_token:
             break
             
+    # Save the complete metadata list to songs.json
+    try:
+        with open("songs.json", "w", encoding="utf-8") as f:
+            json.dump(songs_list, f, indent=4, ensure_ascii=False)
+        print(f"💾 Successfully updated songs.json! Total tracks in library: {len(songs_list)}")
+    except Exception as e:
+        print(f"❌ Error writing to songs.json: {e}")
+
     print(f"✨ Sync complete! {synced_count} new track(s) added.")
 
 if __name__ == "__main__":
