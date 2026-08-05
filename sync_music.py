@@ -23,18 +23,8 @@ def load_existing_songs():
     return [], set()
 
 def extract_embedded_artwork(file_path):
-    """Extracts embedded cover art from the MP3 file if it exists."""
-    try:
-        audio = mutagen.File(file_path)
-        if audio is not None and audio.tags is not None:
-            for tag in audio.tags.values():
-                if isinstance(tag, mutagen.id3.APIC):
-                    image_data = tag.data
-                    mime_type = tag.mime or "image/jpeg"
-                    b64_encoded = base64.b64encode(image_data).decode('utf-8')
-                    return f"data:{mime_type};base64,{b64_encoded}"
-    except Exception:
-        pass
+    """Bypasses heavy Base64 embedding to keep songs.json lightweight. 
+       The script will automatically use Deezer/iTunes URLs instead!"""
     return None
 
 def get_fallback_artwork(artist, title):
