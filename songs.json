@@ -1,5 +1,4 @@
 [
-
     {
         "title": "Cent Daz",
         "artist": "PAUSE",
@@ -35603,5 +35602,53 @@
         "bitrate": 0,
         "artwork": "https://picsum.photos/400/400",
         "url": "https://drive.google.com/uc?export=download&id=1V4Sxv6cIzrNvPOrpYzw51L4spfVnage_"
+    },
+    {
+        "title": "ON/OFF",
+        "artist": "saad DSOULI",
+        "album": "ON/OFF",
+        "genre": "Unknown Genre",
+        "year": "2024-12-20",
+        "trackNumber": "1/1",
+        "duration": 160.94,
+        "bitrate": 128000,
+        "artwork": "https://cdn-images.dzcdn.net/images/cover/4c3b4afec144493291083efaa06697c6/1000x1000-000000-80-0-0.jpg",
+        "url": "https://drive.google.com/uc?export=download&id=1NZ7ZBJr5CObaIHoG95RVsk2qp8L_pBkr"
+    },
+    {
+        "title": "luther",
+        "artist": "Kendrick Lamar",
+        "album": "GNX",
+        "genre": "Unknown Genre",
+        "year": "Unknown Year",
+        "trackNumber": "0",
+        "duration": 0,
+        "bitrate": 0,
+        "artwork": "https://cdn-images.dzcdn.net/images/cover/da5256ff8cacfe9ad90521f6e3792259/1000x1000-000000-80-0-0.jpg",
+        "url": "https://drive.google.com/uc?export=download&id=1K3QSY1dWA89luexTPJ656INNKuXYhq4o"
+    },
+    {
+        "title": "HASH N BLEM",
+        "artist": "Unknown Artist",
+        "album": "Unknown Album",
+        "genre": "Unknown Genre",
+        "year": "Unknown Year",
+        "trackNumber": "0",
+        "duration": 0,
+        "bitrate": 0,
+        "artwork": "https://picsum.photos/400/400",
+        "url": "https://drive.google.com/uc?export=download&id=1V76CkbSHXf2iwhRR7IYcA_TBC-JsjgdI"
+    },
+    {
+        "title": "PARA MI",
+        "artist": "Unknown Artist",
+        "album": "Lerner & Loewe: My Fair Lady",
+        "genre": "Unknown Genre",
+        "year": "Unknown Year",
+        "trackNumber": "0",
+        "duration": 0,
+        "bitrate": 0,
+        "artwork": "https://is1-ssl.mzstatic.com/image/thumb/Music221/v4/01/b0/fe/01b0fe4d-17a1-3b5f-2b53-ffa5cb220fc4/0095115535820.png/600x600bb.jpg",
+        "url": "https://drive.google.com/uc?export=download&id=1MKjUKfWtMq-ag3j03WPzZgkAbJqE7NK_"
     }
 ]
